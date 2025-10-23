@@ -1,5 +1,5 @@
 export interface ICandle {
-  time: number | string;
+  time: string;
   open: number;
   high: number;
   low: number;
@@ -12,10 +12,7 @@ export interface ISwingPoint {
   time: number | string;
 }
 
-interface ITrendLine {
-  type: 'up' | 'down';
+export interface ITrendLineParams {
   slope: number;
   intercept: number;
-  from: ISwingPoint;
-  to: ISwingPoint;
 }

@@ -38,4 +38,25 @@ export class BinanceHttpLib extends HttpLib {
       close: +c[4],
     }));
   }
+
+  async getLastCandles(
+    symbol: string,
+    interval: string,
+    limit: number = 2,
+  ): Promise<ICandle> {
+    const url = `${this.BASE_API}/klines`;
+    const { data } = await this.makeRequest('GET', url, {
+      symbol,
+      interval,
+      limit,
+    });
+
+    return {
+      time: formatDate(data[0][0]),
+      open: +data[0][1],
+      high: +data[0][2],
+      low: +data[0][3],
+      close: +data[0][4],
+    };
+  }
 }
