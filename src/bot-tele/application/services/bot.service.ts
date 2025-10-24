@@ -5,10 +5,11 @@ import { BinanceHttpLib } from 'src/shared/binance';
 import { TrendEnum } from 'src/shared/enum/trend.enum';
 import {
   ICandle,
+  IPriceCurrent,
   ISwingPoint,
   ITrendLineParams,
 } from 'src/shared/interfaces/binance.interface';
-import { TSwingPoints } from 'src/shared/type/data-type';
+import { TSwingPoints, TTrendLines } from 'src/shared/type/data-type';
 import { Telegraf } from 'telegraf';
 
 @Injectable()
@@ -21,65 +22,27 @@ export class BotService {
 
   async sendMessage(chatId: string | number, message: string) {
     try {
-      const price = await this.binance.getPrice('BTCUSDT');
+      const symbol = 'BTCUSDT';
+      const {
+        priceNow,
+        getNowCandles,
+        getLastCandles4h,
+        getLastCandles1d,
+        getCandles1d,
+        getCandles4h,
+        getCandles1h,
+        getCandles15m,
+      } = await this.getDataBinance(symbol);
 
-      // Lấy dữ liệu nến gần nhất
-      const getLastCandles = await this.binance.getLastCandles('BTCUSDT', '4h');
-
-      const getCandles1d = await this.binance.getCandles('BTCUSDT', '1d', 90);
-
-      const getCandles4h = await this.binance.getCandles('BTCUSDT', '4h', 120);
-
-      const getCandles1h = await this.binance.getCandles('BTCUSDT', '1h', 200);
-
-      const getCandles15m = await this.binance.getCandles(
-        'BTCUSDT',
-        '15m',
-        300,
-      );
-
-      const highestAndLowest1d = this.findSwingPoints(getCandles1d, 1);
-
-      const highestAndLowest4h = this.findSwingPoints(getCandles4h, 2);
-
-      const highestAndLowest1h = this.findSwingPoints(getCandles1h, 2);
-
-      const highestAndLowest15m = this.findSwingPoints(getCandles15m, 3);
-
-      const trend4h = this.detectTrend(highestAndLowest4h);
-
-      const trendDay = this.detectTrend(highestAndLowest1d);
-
-      const trend1h = this.detectTrend(highestAndLowest1h);
-
-      const trend15m = this.detectTrend(highestAndLowest15m);
-
-      const calculateTrendline = this.calculateTrendline(
-        highestAndLowest4h,
-        trend4h.trend,
-      );
-
-      const priceAtTime = this.calculatePriceTrendLineAtTime(
-        getLastCandles.time,
-        calculateTrendline.slope,
-        calculateTrendline.intercept,
-      );
-
-      console.log(priceAtTime);
-
-      console.log('highestAndLowest4h:', highestAndLowest4h);
-
-      console.log('getLastCandles:', getLastCandles);
-
-      console.log(
-        'trend 1d:',
-        trendDay,
-        'trend 4h:',
-        trend4h,
-        'trend 1h:',
-        trend1h,
-        'trend 15m:',
-        trend15m,
+      this.handleDataBinance(
+        priceNow,
+        getNowCandles,
+        getLastCandles4h,
+        getLastCandles1d,
+        getCandles1d,
+        getCandles4h,
+        getCandles1h,
+        getCandles15m,
       );
 
       // await this.bot.telegram.sendMessage(chatId, message);
@@ -94,7 +57,7 @@ export class BotService {
     const swingHighs: ISwingPoint[] = [];
     const swingLows: ISwingPoint[] = [];
 
-    for (let i = lookback; i < candles.length - lookback; i++) {
+    for (let i = lookback; i < candles.length - lookback - 1; i++) {
       let { high, low, time, close } = candles[i];
 
       if (String(time).startsWith('2025-10-10')) {
@@ -178,23 +141,30 @@ export class BotService {
     return { trend: TrendEnum.UNSPECIFIED };
   }
 
-  calculateTrendline(data: TSwingPoints, trend: TrendEnum): ITrendLineParams {
-    const p1 = trend === TrendEnum.UP ? data.swingHighs[0] : data.swingLows[0];
-    const p2 = trend === TrendEnum.UP ? data.swingHighs[1] : data.swingLows[1];
+  calculateTrendLine(data: TSwingPoints): TTrendLines {
+    const highs = data.swingHighs;
+    const lows = data.swingLows;
 
-    const x1 = new Date(p1.time).getTime();
-    const x2 = new Date(p2.time).getTime();
-    const y1 = p1.value;
-    const y2 = p2.value;
+    const [h1, h2] = highs;
+    const xh1 = new Date(h1.time).getTime();
+    const xh2 = new Date(h2.time).getTime();
+    const yh1 = h1.value;
+    const yh2 = h2.value;
+    const slopeHigh = (yh2 - yh1) / (xh2 - xh1);
+    const interceptHigh = yh1 - slopeHigh * xh1;
 
-    if (x1 === x2) {
-      throw new Error('Hai điểm có cùng thời gian, không thể tính slope.');
-    }
+    const [l1, l2] = lows;
+    const xl1 = new Date(l1.time).getTime();
+    const xl2 = new Date(l2.time).getTime();
+    const yl1 = l1.value;
+    const yl2 = l2.value;
+    const slopeLow = (yl2 - yl1) / (xl2 - xl1);
+    const interceptLow = yl1 - slopeLow * xl1;
 
-    const slope = (y2 - y1) / (x2 - x1);
-    const intercept = y1 - slope * x1;
-
-    return { slope, intercept };
+    return {
+      resistance: { slope: slopeHigh, intercept: interceptHigh },
+      support: { slope: slopeLow, intercept: interceptLow },
+    };
   }
 
   calculatePriceTrendLineAtTime(
@@ -205,5 +175,105 @@ export class BotService {
     const x = new Date(time).getTime();
     const price = slope * x + intercept;
     return price;
+  }
+
+  async getDataBinance(symbol: string) {
+    const priceNow = await this.binance.getPriceNow(symbol);
+
+    const getNowCandles = await this.binance.getNowCandles(symbol);
+
+    const getLastCandles4h = await this.binance.getLastCandles(symbol, '4h');
+
+    const getLastCandles1d = await this.binance.getLastCandles(symbol, '1d');
+
+    const getCandles1d = await this.binance.getCandles(symbol, '1d', 90);
+
+    const getCandles4h = await this.binance.getCandles(symbol, '4h', 120);
+
+    const getCandles1h = await this.binance.getCandles(symbol, '1h', 200);
+
+    const getCandles15m = await this.binance.getCandles(symbol, '15m', 300);
+    return {
+      priceNow,
+      getNowCandles,
+      getLastCandles4h,
+      getLastCandles1d,
+      getCandles1d,
+      getCandles4h,
+      getCandles1h,
+      getCandles15m,
+    };
+  }
+
+  handleDataBinance(
+    priceNow: IPriceCurrent,
+    getNowCandles: ICandle,
+    getLastCandles4h: ICandle,
+    getLastCandles1d: ICandle,
+    getCandles1d: ICandle[],
+    getCandles4h: ICandle[],
+    getCandles1h: ICandle[],
+    getCandles15m: ICandle[],
+  ) {
+    const timeframes = [
+      { key: '1d', candles: getCandles1d, lookback: 6 },
+      { key: '4h', candles: getCandles4h, lookback: 5 },
+      { key: '1h', candles: getCandles1h, lookback: 4 },
+      { key: '15m', candles: getCandles15m, lookback: 3 },
+    ];
+
+    const trends: any = {};
+
+    for (const { key, candles, lookback } of timeframes) {
+      const swing = this.findSwingPoints(candles, lookback);
+      trends[`highestAndLowest${key}`] = swing;
+      trends[`trend${key}`] = this.detectTrend(swing);
+    }
+
+    this.handleTrendLine(trends.highestAndLowest4h, getLastCandles4h);
+
+    this.handleTrendLine(trends.highestAndLowest1d, getLastCandles1d);
+
+
+    return {};
+  }
+
+  handleTrendLine(highestAndLowest: TSwingPoints, getLastCandles: ICandle) {
+    const calculateTrendLine = this.calculateTrendLine(highestAndLowest);
+
+    const priceTrendLineAtResistance = this.calculatePriceTrendLineAtTime(
+      getLastCandles.time,
+      calculateTrendLine.resistance.slope,
+      calculateTrendLine.resistance.intercept,
+    );
+
+    const priceTrendLineAtSupport = this.calculatePriceTrendLineAtTime(
+      getLastCandles.time,
+      calculateTrendLine.support.slope,
+      calculateTrendLine.support.intercept,
+    );
+
+    const touchResistance =
+      Math.abs(getLastCandles.close - priceTrendLineAtResistance) /
+        priceTrendLineAtResistance <
+      0.005;
+
+    const touchSupport =
+      Math.abs(getLastCandles.close - priceTrendLineAtSupport) /
+        priceTrendLineAtSupport <
+      0.005;
+
+    if (touchResistance) {
+      console.log('Touch resistance 4h');
+    }
+    if (touchSupport) {
+      console.log('Touch support 4h');
+    }
+    if (getLastCandles.close > priceTrendLineAtResistance) {
+      console.log('breakout resistance 4h');
+    }
+    if (getLastCandles.close < priceTrendLineAtSupport) {
+      console.log('breakdown support 4h');
+    }
   }
 }

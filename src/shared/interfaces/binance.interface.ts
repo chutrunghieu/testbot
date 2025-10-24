@@ -16,3 +16,9 @@ export interface ITrendLineParams {
   slope: number;
   intercept: number;
 }
+
+export interface IPriceCurrent {
+  symbol: string;
+  price: number;
+  time: string;
+}
