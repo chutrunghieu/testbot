@@ -53,33 +53,99 @@ export class BotService {
     }
   }
 
-  findSwingPoints(candles: ICandle[], lookback: number): TSwingPoints {
+  public findSwingPoints(
+    candles: ICandle[],
+    lookback: number,
+    key: string,
+  ): TSwingPoints {
     const swingHighs: ISwingPoint[] = [];
     const swingLows: ISwingPoint[] = [];
 
-    for (let i = lookback; i < candles.length - lookback - 1; i++) {
-      let { high, low, time, close } = candles[i];
+    if (candles.length < lookback * 2 + 2) {
+      return { swingHighs, swingLows };
+    }
+    // ❌ Bỏ nến cuối (chưa hoàn thiện)
+    const effectiveCandles = candles.slice(0, -1);
 
+    const atrPeriodMap: Record<string, number> = {
+      '15m': 10,
+      '1h': 12,
+      '4h': 14,
+      '1d': 20,
+    };
+
+    const atrMap = {
+      '15m': 1.3, // nến nhỏ, biến động nhiễu ⇒ cần ATR “nhạy hơn”
+      '1h': 1.2,
+      '4h': 1.15,
+      '1d': 1.1, // nến lớn, dao động tự nhiên lớn ⇒ giảm nhạy
+    };
+
+    const volatilityThresholds = {
+      '15m': { low: 0.008, high: 0.015 },
+      '1h': { low: 0.012, high: 0.022 },
+      '4h': { low: 0.018, high: 0.03 },
+      '1d': { low: 0.025, high: 0.04 },
+    };
+
+    const { low, high } = volatilityThresholds[key];
+    const atr = this.calcATR(effectiveCandles, atrPeriodMap[key]);
+    const adjustedATR = atr * atrMap[key];
+    const lastClose = effectiveCandles[effectiveCandles.length - 1].close;
+    const volatilityRatio = +(adjustedATR / lastClose).toFixed(5);
+
+    // 🔧 Tự động điều chỉnh lookback dựa vào độ biến động
+    const adjLookback =
+      volatilityRatio > high
+        ? Math.max(2, lookback - 1) // Biến động mạnh ⇒ nhạy hơn
+        : volatilityRatio < low
+          ? lookback + 1 // Biến động yếu ⇒ làm mượt hơn
+          : lookback;
+
+    for (let i = adjLookback; i < effectiveCandles.length - adjLookback; i++) {
+      let { high, low, close, time } = effectiveCandles[i];
+
+      // 🔸 Xử lý đặc biệt ngày 2025-10-10
       if (String(time).startsWith('2025-10-10')) {
         low = close;
       }
-      // 🔺 Kiểm tra đỉnh
+
+      const prevCandles = effectiveCandles.slice(i - adjLookback, i);
+      const nextCandles = effectiveCandles.slice(i + 1, i + 1 + adjLookback);
+
       const isHigh =
-        candles.slice(i - lookback, i).every((c) => c.high < high) &&
-        candles.slice(i + 1, i + 1 + lookback).every((c) => c.high < high);
+        prevCandles.every((c) => c.high < high) &&
+        nextCandles.every((c) => c.high < high);
 
-      // 🔻 Kiểm tra đáy
       const isLow =
-        candles.slice(i - lookback, i).every((c) => c.low > low) &&
-        candles.slice(i + 1, i + 1 + lookback).every((c) => c.low > low);
+        prevCandles.every((c) => c.low > low) &&
+        nextCandles.every((c) => c.low > low);
 
-      if (isHigh) swingHighs.push({ index: i, time, value: high });
-      if (isLow) swingLows.push({ index: i, time, value: low });
+      if (isHigh) {
+        const avgAround =
+          (Math.max(...prevCandles.map((c) => c.high)) +
+            Math.max(...nextCandles.map((c) => c.high))) /
+          2;
+        if (high - avgAround > atr * 0.4) {
+          swingHighs.push({ index: i, time, value: high });
+        }
+      }
+
+      if (isLow) {
+        const avgAround =
+          (Math.min(...prevCandles.map((c) => c.low)) +
+            Math.min(...nextCandles.map((c) => c.low))) /
+          2;
+        if (avgAround - low > atr * 0.4) {
+          swingLows.push({ index: i, time, value: low });
+        }
+      }
     }
-    const recentSwingHighs = swingHighs.slice(-2);
-    const recentSwingLows = swingLows.slice(-2);
 
-    return { swingHighs: recentSwingHighs, swingLows: recentSwingLows };
+    return {
+      swingHighs: swingHighs.slice(-2),
+      swingLows: swingLows.slice(-2),
+    };
   }
 
   detectTrend(
@@ -186,13 +252,13 @@ export class BotService {
 
     const getLastCandles1d = await this.binance.getLastCandles(symbol, '1d');
 
-    const getCandles1d = await this.binance.getCandles(symbol, '1d', 90);
+    const getCandles1d = await this.binance.getCandles(symbol, '1d', 180);
 
-    const getCandles4h = await this.binance.getCandles(symbol, '4h', 120);
+    const getCandles4h = await this.binance.getCandles(symbol, '4h', 180);
 
-    const getCandles1h = await this.binance.getCandles(symbol, '1h', 200);
+    const getCandles1h = await this.binance.getCandles(symbol, '1h', 168);
 
-    const getCandles15m = await this.binance.getCandles(symbol, '15m', 300);
+    const getCandles15m = await this.binance.getCandles(symbol, '15m', 96);
     return {
       priceNow,
       getNowCandles,
@@ -216,24 +282,32 @@ export class BotService {
     getCandles15m: ICandle[],
   ) {
     const timeframes = [
-      { key: '1d', candles: getCandles1d, lookback: 6 },
-      { key: '4h', candles: getCandles4h, lookback: 5 },
-      { key: '1h', candles: getCandles1h, lookback: 4 },
-      { key: '15m', candles: getCandles15m, lookback: 3 },
+      { key: '1d', candles: getCandles1d, lookback: 2 },
+      { key: '4h', candles: getCandles4h, lookback: 2 },
+      { key: '1h', candles: getCandles1h, lookback: 2 },
+      { key: '15m', candles: getCandles15m, lookback: 2 },
     ];
 
     const trends: any = {};
 
     for (const { key, candles, lookback } of timeframes) {
-      const swing = this.findSwingPoints(candles, lookback);
+      const swing = this.findSwingPoints(candles, lookback, key);
+      console.log(swing);
+
       trends[`highestAndLowest${key}`] = swing;
       trends[`trend${key}`] = this.detectTrend(swing);
     }
 
+    console.log(
+      trends.trend1d,
+      trends.trend4h,
+      trends.trend1h,
+      trends.trend15m,
+    );
+
     this.handleTrendLine(trends.highestAndLowest4h, getLastCandles4h);
 
     this.handleTrendLine(trends.highestAndLowest1d, getLastCandles1d);
-
 
     return {};
   }
@@ -275,5 +349,23 @@ export class BotService {
     if (getLastCandles.close < priceTrendLineAtSupport) {
       console.log('breakdown support 4h');
     }
+  }
+
+  // 🔹 Tính ATR (Average True Range)
+  private calcATR(candles: ICandle[], period: number): number {
+    if (candles.length < period + 1) return 0;
+
+    const trs: number[] = [];
+    for (let i = 1; i < candles.length; i++) {
+      const curr = candles[i];
+      const prev = candles[i - 1];
+      const tr = Math.max(
+        curr.high - curr.low,
+        Math.abs(curr.high - prev.close),
+        Math.abs(curr.low - prev.close),
+      );
+      trs.push(tr);
+    }
+    return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
   }
 }
